@@ -30,7 +30,7 @@ Parameters that can be specified to generate the dataframe that the app uses:
 ![pred_ex](/img/pred_ex.png)
 
 
-## Results:
+## Results
 
 ![results](/img/results.png)
 
@@ -84,7 +84,7 @@ The mean counts of kept n-grams are 3428, 23.9, 7.2 and 4.1 for 1-, 2-, 3- and 4
 I believe that the low-frequency 1-grams would normally be eliminated at this point in modeling, but I changed them all to “xx,” a dummy variable to indicate a generic rare word. The higher-order n-grams - as well as the test set of 4-grams - also have words that are “rare” (in the training set) changed to “xx.” In fact these are built from the 1-grams (separately for training and test sets). “Unseen” words entered by the user are also changed to “xx,” but “xx” is never predicted as its probability weight is zeroed at end of the algorithm.
 
 
-## Process and Theory:
+## Process and Theory
 
 All the n-grams are then assembled into a large R data.table object with their count ratios (e.g. “with her husband” is the completion of “with her” about 5% of the time that “with her” occurs or “in the” is the completion of “in” about 15% of the time that “in” occurs). For the Shiny app, this matrix is uploaded along with an R script, which uses the Shiny package and several functions to manipulate the matrix.
 
