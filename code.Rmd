@@ -1,0 +1,560 @@
+---
+title: "Word Prediction Algorithm"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+```{r libraries}
+library(quanteda)
+library(knitr)
+library(readr)
+library(profvis)
+library(fastmatch)
+library(caret)
+library(data.table)
+## library(Kmisc) readlines does not have a skipNul option and so does not upload the rest of the data
+## library(feather) need to first upload to R then write to feather-format file, which could then be read quickly, but we assume user starts with source text files given
+## library(stringi) stri_read_lines(path) took a really long time, aborted upon error with embedded NUL
+## library(data.table) fread seems to be for reading in tables, like CSVs, hard to get separator values right (between and within columns)
+## readBin with size <- file.info(fp)$size, rawToChar(readBin(fp, "raw", size)) error on embedded NUL
+```
+
+```{r parameters, echo = TRUE}
+## parameters to choose.  frcutoff[1] will be automatically altered later unless that part of code deactivated
+frcutoff <- c(1, 2, 2, 2)
+skipgrams <- c(0, 0, 0)
+samplerate <- 0.3
+testlines <- 10
+keepers <- 0.9
+```
+
+```{r load}
+## find the raw data files:
+setwd("/Users/davidmasse/Documents/coursera/data science specialization/capstone/")
+path <- "/Users/davidmasse/Documents/coursera/data science specialization/capstone/capstone data dump/en_US/" ##path for text files for corpora
+l <- list.files(path)
+
+## upload profane phrase list
+profanityfile <- "/Users/davidmasse/Documents/coursera/data science specialization/capstone/capstone data dump/prof.txt" 
+url <- "https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/en"
+download.file(url, destfile = profanityfile, method = "curl")
+con <- file(profanityfile, "r")
+profane <- readLines(con, skipNul = TRUE)
+close(con)
+
+## Making a corpus
+corpify <- function(filer, medium, profanity, sr = samplerate) {
+        lines <- read_lines(filer)
+        set.seed(1790)
+        linesamp <- lines[as.logical(rbinom(length(lines), 1, sr))]
+        linesamp <- c(linesamp, "the the the the the clover clamps the the the the the")  ## these lines, added for testing, are taken out with the profanity filter below
+        clean <- !grepl(paste(profanity,collapse="|"), linesamp)
+        linesamp <- linesamp[clean]
+        linesamp <- gsub("_", " ", linesamp, fixed = TRUE) ## needed as the tokenizer leaves "_" in, but it confounds our functions when 1-Grams contain "_" because it is the term separator in N-Grams where N>1
+        ## linesamp <- gsub("-", " ", linesamp, fixed = TRUE)
+        intest <- sample(1:length(linesamp), testlines, replace=FALSE)
+        test <- linesamp[intest]
+        train <- linesamp[-intest]
+        linetrain <- corpus(train)
+        linetest <- corpus(test)
+        docvars(linetrain, "Medium") <- medium ## add column to be used when merged with other media
+        docvars(linetest, "Medium") <- medium ## add column to be used when merged with other media
+        return(list(linetrain,linetest))
+        ## linesummary <- summary(linecorp)  ## first 100 documents only
+        ## head(linecorp)  ## just to show the summary
+        ## texts(linecorp)[2]  ## just to show extraction of a document from the corpus
+}
+
+maketokens <- function(corpus, ng) {
+        tokens(corpus, what = "word", remove_numbers = TRUE, remove_punct = TRUE, remove_symbols = TRUE, remove_separators = TRUE, remove_twitter = TRUE, remove_hyphens = TRUE, remove_url = TRUE, ngrams = ng, include_docvars = FALSE) ##not using the corpus or docvars for now, but may be useful
+}
+
+## get all word frequencies for graph
+graph <- function(onegr = onegr) {
+        graph1grams <- onegr
+        graph1dfm <- dfm(graph1grams, tolower = TRUE, remove = NULL, stem = FALSE)
+        graph1fr <- data.table(textstat_frequency(graph1dfm, nfeature(graph1dfm)))
+        graph1fr[ , docfreq := NULL]
+        length1fr <- length(graph1fr$feature)
+        rm(graph1grams, graph1dfm)
+        graph2grams <- tokens(onegr, n = 2)
+        graph2dfm <- dfm(graph2grams, tolower = TRUE, remove = NULL, stem = FALSE)
+        graph2fr <- data.table(textstat_frequency(graph2dfm, nfeature(graph2dfm)))
+        graph2fr[ , docfreq := NULL]
+        length2fr <- length(graph2fr$feature)
+        rm(graph2grams, graph2dfm)
+        graph3grams <- tokens(onegr, n = 3)
+        graph3dfm <- dfm(graph3grams, tolower = TRUE, remove = NULL, stem = FALSE)
+        graph3fr <- data.table(textstat_frequency(graph3dfm, nfeature(graph3dfm)))
+        graph3fr[ , docfreq := NULL]
+        length3fr <- length(graph3fr$feature)
+        rm(graph3grams, graph3dfm)
+        graph4grams <- tokens(onegr, n = 4)
+        graph4dfm <- dfm(graph4grams, tolower = TRUE, remove = NULL, stem = FALSE)
+        graph4fr <- data.table(textstat_frequency(graph4dfm, nfeature(graph4dfm)))
+        graph4fr[ , docfreq := NULL]
+        length4fr <- length(graph4fr$feature)
+        rm(graph4grams, graph4dfm)
+        xmax <- max(lengthfr, length2fr, length3fr, length4fr)
+        s1 <- sum(fr$frequency)
+        s2 <- sum(graph2fr$frequency)
+        s3 <- sum(graph3fr$frequency)
+        s4 <- sum(graph4fr$frequency)
+        ymin <- min(1/s1, 1/s2, 1/s3, 1/s4)
+        plot(log(graph3fr$rank), log(graph3fr$frequency/s3), ylim = c(log(ymin),0), xlim = c(0,log(xmax)), xlab = "Log of N-Gram Frequency Rank", ylab = "Log of N-Gram Frequency", main = "Frequency (N-Gram Count / Total Count for All N-Grams)", pch = 20, col = "red")
+        points(log(graph4fr$rank), log(graph4fr$frequency/s4), col = "blue", pch = 20)
+        points(log(graph2fr$rank), log(graph2fr$frequency/s2), col = "green", pch = 20)
+        points(log(fr$rank), log(fr$frequency/s1), col = "black", pch = 20)
+        legend("topright", legend = c("1-Grams", "2-Grams", "3-Grams", "4-Grams"), col = c("black", "green", "red", "blue"), pch = 20)
+}
+
+## parameter is list of file names
+summary <- function(l = l) {
+        summary <- data.frame(row.names = l)
+        for (i in 1:length(l)) {
+                con <- file(paste(path, l[i], sep = ""), "r")
+                lines <- readLines(con, skipNul = TRUE)
+                summary$NumberOfLines[i] <- length(lines)
+                summary$MeanLineLength[i] <- round(mean(nchar(lines)),0)
+                summary$MedianLineLength[i] <- median(nchar(lines))
+                summary$MinLineLength[i] <- min(nchar(lines))
+                summary$MaxLineLength[i] <- max(nchar(lines))
+                summary$EstWordCountMn[i] <- round(sum(nchar(lines))/5.1/1000000, 1)
+                summary$MbInMemory[i] <- round(object.size(lines)/1000000,1)
+                rm(lines)
+                close(con)
+        }
+        kable(summary)
+}
+
+## make the training and testing corpuses (sampling equally from all three sources):
+blogcorplist <- corpify(paste(path, l[1], sep = ""), "Blogs", profane)
+newscorplist <- corpify(paste(path, l[2], sep = ""), "News", profane)
+twitcorplist <- corpify(paste(path, l[3], sep = ""), "Twitter", profane)
+corptrain <- blogcorplist[[1]] + newscorplist[[1]] + twitcorplist[[1]]
+corptest <- blogcorplist[[2]] + newscorplist[[2]] + twitcorplist[[2]]
+rm(blogcorplist, newscorplist, twitcorplist)
+## rm(path, profane, profanityfile, url, l)
+
+## make a list of all onegrams in the training set and their frequencies
+onegr <- maketokens(corptrain, 1)
+rm(corptrain)
+onedfm <- dfm(onegr, tolower = TRUE, stem = FALSE, remove = NULL)  ## remove = stopwords("english") here would take stopwords out of all the test tables hereafter as knowns would have no stopwords.
+fr <- data.table(textstat_frequency(onedfm, nfeature(onedfm)))
+lengthfr <- length(fr$feature)
+rm(onedfm)
+
+## make a list of all onegrams in the test set and their frequencies
+testgr <- maketokens(corptest, 1)
+rm(corptest)
+testdfm <- dfm(testgr, tolower = TRUE, remove = NULL, stem = FALSE)
+frt <- textstat_frequency(testdfm, nfeature(testdfm))
+rm(testdfm)
+
+## choosing the cutoff to cover a bit more than 90% of all word instances
+w <- 0
+cutoffindex <- 1
+v <- sum(fr$frequency)
+while (w < keepers) {
+        w <- w + fr$frequency[cutoffindex]/v
+        cutoffindex <- cutoffindex + 1
+}
+frcutoff[1] <- fr[cutoffindex,"frequency"] - 1
+rm(v, w)
+
+## words occuring at least as often as the cutoff rate are chosen as "knowns".  the unknowns will be changed to "xx" a dummy variable representing "a rare word."  Later, unseen words are also deemed "rare" and therefore changed to "xx".  However, for the test data we don't use 4-grams ending in "xx" as we later remove "xx" from the final distribution of predictions, and therefore its probability is zero (which would blow up perplexity measure).  the known words are used to form higher-order N-grams, so the xx's will carry through.
+trainunknown <- subset(fr, frequency < frcutoff[1])
+trainknown <- subset(fr, frequency >= frcutoff[1])
+testunknown <- setdiff(frt$feature, trainknown$feature)  ## test set words with low frequency in the training set that occur in the test set
+## rm(fr)
+rm(frt, trainknown)
+
+## replacing rare test words with "xx" and listing 4-grams with frequencies (including those with "xx" in any position)
+xxtest <- rep("xx", length(testunknown))
+## dictterms <- as.list(knowns$feature)
+## names(dictterms) <- knowns$feature
+## mydict <- dictionary(dictterms) 
+##  testonegram <- tokens_lookup(testgr, mydict, case_insensitive = TRUE, nomatch = "xx", valuetype = "fixed")
+testonegram <- tokens_replace(testgr, testunknown, replacement = xxtest, case_insensitive = TRUE)
+testfourgram <- tokens_ngrams(testonegram, n = 4)
+dfmtestfourgram <- dfm(testfourgram, tolower = TRUE, remove = NULL, stem = FALSE)
+dfmtestfourgram <- dfm_trim(dfmtestfourgram, min_count = 1)
+frt4 <- data.table(textstat_frequency(dfmtestfourgram, nfeature(dfmtestfourgram)), key = "feature")
+rm(testunknown, testgr, testonegram, testfourgram, dfmtestfourgram, xxtest)
+
+## replacing rare training words with "xx" and calculating all training counts (including that of "xx").  renaming columns for master table, calculating relative frequencies.
+xxtrain <- rep("xx", length(trainunknown$feature))
+onegram <- tokens_replace(onegr, trainunknown$feature, replacement = xxtrain, case_insensitive = TRUE)
+## onegram <- tokens_remove(onegram, stopwords("english")) see above comment on stopwords
+dfmonegram <- dfm(onegram, tolower = TRUE, remove = NULL, stem = FALSE)
+fr1 <- data.table(textstat_frequency(dfmonegram, nfeature(dfmonegram)))
+fr1[ , docfreq := NULL]
+setnames(fr1, "frequency", "frequency1")
+setnames(fr1, "feature", "feature1")
+setnames(fr1, "rank", "rank1")
+wordtotal <- sum(fr1$frequency1, na.rm = TRUE)
+fr1[ , ratio1prob1 := frequency1/wordtotal]
+## The following line as well as three pairs of lines below were meant to counter the effect of skip grams, which increase counts for certain n-grams without increasing counts of their completions as well as introducing new n-grams that may have no instances of completion.  The idea was to put all the frequencies on the same scale, but the skipgram models still had slightly lower accuracy despite taking longer to compute.  Without skipgrams, the adjustments did not affect accuracy, but they increased perplexity; so I removed them.
+## fr1[ , frequency1 := ratio1prob1]
+setkey(fr1, feature1)
+#rm(onegr)
+rm(trainunknown, dfmonegram, xxtrain)
+
+twogram <- tokens_skipgrams(onegram, n = 2, skip = 0:skipgrams[1])
+dfmtwogram <- dfm(twogram, tolower = TRUE, remove = NULL, stem = FALSE)
+dfmtwogram <- dfm_trim(dfmtwogram, min_count = frcutoff[2])
+fr2 <- data.table(textstat_frequency(dfmtwogram, nfeature(dfmtwogram)))
+fr2[ , docfreq := NULL]
+setnames(fr2, "frequency", "frequency2")
+setnames(fr2, "feature", "feature2")
+setnames(fr2, "rank", "rank2")
+##  word2total <- sum(fr2$frequency2, na.rm = TRUE)
+##  fr2[ , frequency2 := frequency2/word2total]
+setkey(fr2, feature2)
+fr2[ , prefix1to2 := paste(unlist(strsplit(feature2, "_", fixed = TRUE))[1], collapse = "_"), by = feature2]
+fr2[ , prefixcount1to2 := fr1[prefix1to2, frequency1], by = feature2]
+fr2[ , ratio2to1 := frequency2/prefixcount1to2]
+setkey(fr2, feature2)
+rm(twogram, dfmtwogram)
+
+## starting to build master table
+frall <- merge(fr1, fr2, by.x = "feature1", by.y = "prefix1to2", all = TRUE)
+lengthfr1 <- length(fr1$feature1)
+## rm(fr1)
+
+threegram <- tokens_skipgrams(onegram, n = 3, skip = 0:skipgrams[2])
+dfmthreegram <- dfm(threegram, tolower = TRUE, remove = NULL, stem = FALSE)
+dfmthreegram <- dfm_trim(dfmthreegram, min_count = frcutoff[3])
+fr3 <- data.table(textstat_frequency(dfmthreegram, nfeature(dfmthreegram)))
+fr3[ , docfreq := NULL]
+setnames(fr3, "frequency", "frequency3")
+setnames(fr3, "feature", "feature3")
+setnames(fr3, "rank", "rank3")
+## word3total <- sum(fr3$frequency3, na.rm = TRUE)
+## fr3[ , frequency3 := frequency3/word3total]
+setkey(fr3, feature3)
+fr3[ , prefix2to3 := paste(unlist(strsplit(feature3, "_", fixed = TRUE))[1:2], collapse = "_"), by = feature3]
+fr3[ , prefixcount2to3 := fr2[prefix2to3, frequency2], by = feature3]
+fr3[ , ratio3to2 := frequency3/prefixcount2to3]
+rm(threegram, dfmthreegram)
+
+frall <- merge(frall, fr3, by.x = "feature2", by.y = "prefix2to3", all = TRUE)
+## rm(fr2)
+
+fourgram <- tokens_skipgrams(onegram, n = 4, skip = 0:skipgrams[3])
+dfmfourgram <- dfm(fourgram, tolower = TRUE, remove = NULL, stem = FALSE)
+dfmfourgram <- dfm_trim(dfmfourgram, min_count = frcutoff[4])
+fr4 <- data.table(textstat_frequency(dfmfourgram, nfeature(dfmfourgram)))
+fr4[ , docfreq := NULL]
+setnames(fr4, "frequency", "frequency4")
+setnames(fr4, "feature", "feature4")
+setnames(fr4, "rank", "rank4")
+## word4total <- sum(fr4$frequency4, na.rm = TRUE)
+## fr4[ , frequency4 := frequency4/word4total]
+setkey(fr4, feature4)
+fr4[ , prefix3to4 := paste(unlist(strsplit(feature4, "_", fixed = TRUE))[1:3], collapse = "_"), by = feature4]
+fr4[ , prefixcount3to4 := fr3[prefix3to4, frequency3], by = feature4]
+fr4[ , ratio4to3 := frequency4/prefixcount3to4]
+rm(onegram, fourgram, dfmfourgram)
+
+frall <- merge(frall, fr4, by.x = "feature3", by.y = "prefix3to4", all = TRUE)
+## rm(fr3, fr4)
+
+frall[ , c("frequency1", "rank1", "frequency2", "rank2", "prefixcount1to2", "frequency3", "rank3", "prefixcount2to3", "frequency4", "rank4", "prefixcount3to4") := NULL]
+
+save(frall, file = "frall")
+save(frt4, file = "frt4")
+
+allxxout <- function(frtest = frt4) {
+        log <- rep(TRUE, length(frtest$feature))
+        for (i in 1:length(frtest$feature)) {
+                split <- unlist(strsplit(frtest$feature[i], "_", fixed = TRUE))
+                for (j in 1:length(split)) {
+                        if (split[j] == "xx") {
+                                log[i] <- FALSE
+                        }
+                }
+        }
+        frtest <- frtest[log]
+        frtest
+}
+
+endxxout <- function(frtest = frt4) {
+        log <- rep(TRUE, length(frtest$feature))
+        for (i in 1:length(frtest$feature)) {
+                split <- unlist(strsplit(frtest$feature[i], "_", fixed = TRUE))
+                if (split[4] == "xx") {
+                        log[i] <- FALSE
+                }
+        }
+        frtest <- frtest[log]
+        frtest
+}
+
+parseinput <- function(garble = "wewe_wewew_wew") 
+{
+        split <- unlist(strsplit(garble, " ", fixed = TRUE))
+        for (i in 1:length(split)) {
+                if (is.na(fr1[split[i], frequency1]))
+                        split[i] <- "xx"
+        }
+        paste(split, collapse = "_")
+}
+
+process3start <- function(start, dt = frall, k = 0.4, khat = 0) {
+        split <- unlist(strsplit(start, "_", fixed = TRUE))
+        setkey(dt, feature3)
+        work <- dt[start, .(feature4, ratio4to3)]
+        setkey(work, NULL)
+        work <- unique(work)
+        work <- work[!is.na(work$ratio4to3)]
+        work[ , feature4 := unlist(strsplit(feature4, "_", fixed = TRUE))[4], by = feature4]
+        work[ , ratio4to3 := (k^khat)*ratio4to3]
+        setorder(work, -ratio4to3, feature4)
+        colnames(work) <- c("feature", "score")
+        work
+}
+
+process2start <- function(start, dt = frall, k = 0.4, khat = 0) {
+        split <- unlist(strsplit(start, "_", fixed = TRUE))
+        setkey(dt, feature2)
+        work <- dt[start, .(feature3, ratio3to2)]
+        setkey(work, NULL)
+        work <- unique(work)
+        work <- work[!is.na(work$ratio3to2)]
+        work[ , feature3 := unlist(strsplit(feature3, "_", fixed = TRUE))[3], by = feature3]
+        work[ , ratio3to2 := (k^khat)*ratio3to2]
+        setorder(work, -ratio3to2, feature3)
+        colnames(work) <- c("feature", "score")
+        work
+}
+
+process1start <- function(start, dt = frall, k = 0.4, khat = 0) {
+        setkey(dt, feature1)
+        work <- dt[start, .(feature2, ratio2to1)]
+        setkey(work, NULL)
+        work <- unique(work)
+        work <- work[!is.na(work$ratio2to1)]
+        work[ , feature2 := unlist(strsplit(feature2, "_", fixed = TRUE))[2], by = feature2]
+        work[ , ratio2to1 := (k^khat)*ratio2to1]
+        setorder(work, -ratio2to1, feature2)
+        colnames(work) <- c("feature", "score")
+        work
+}
+
+process0start <- function(dt = frall, k = 0.4, khat = 0) {
+        work <- dt[ , .(feature1, ratio1prob1)]
+        setkey(work, NULL)
+        work <- unique(work)
+        work <- work[!is.na(work$ratio1prob1)]  ## a feature may appear with NA as score if it is a prefix in one of the fr tables but can be assigned no frequency because it doesn't make the cut in the n-1-gram.
+        work[ , ratio1prob1 := (k^khat)*ratio1prob1]
+        setorder(work, -ratio1prob1, feature1)
+        colnames(work) <- c("feature", "score")
+        work
+}
+
+## below, sometimes I sum together contributions from first round results. This doesn't make the statistic any more rigorous, but it does seem in the spirit of giving bigger scores to words that come up again in the knockoff round - or is this just a special boost for the three most common words?)
+
+## "along_with_the" pushed "the" to top as it was higher backed off three times than other candidates backed off twice!
+## this function can take a unigram, a bigram or a trigram as input for "start"
+top <- function(start = NULL, dt = frall, k = 0.4) {
+        split <- unlist(strsplit(start, "_", fixed = TRUE))
+        l <- length(split)
+        round1 <- data.table(feature = character(), score = numeric())
+        round1 <- switch(l+1,
+                process0start(dt, k, khat = 0),
+                process1start(start, dt, k, khat = 0), 
+                process2start(start, dt, k, khat = 0), 
+                process3start(start, dt, k, khat = 0))
+        if (l == 0) {
+                round1 <- round1[feature != "xx"]
+                s <- sum(round1$score)
+                round1[ , score := score/s]
+                setorder(round1, -score, feature)
+                round1
+        }
+        else {
+                if (l == 3|2) {
+                        start <- paste(split[2:l], collapse = "_")
+                }
+                ## if l already == 1, start is not needed
+                round2 <- data.table(feature = character(), score = numeric())
+                round2 <- switch(l,
+                        process0start(dt, k, khat = 1),
+                        process1start(start, dt, k, khat = 1), 
+                        process2start(start, dt, k, khat = 1))
+                round2 <- round2[!(feature %in% round1$feature)]  ## take this out to improve accuarcy?
+                round2 <- rbindlist(list(round1, round2))
+                if (l == 1) {
+                        round2 <- round2[feature != "xx"]
+                        s <- sum(round2$score)
+                        round2[ , score := score/s]
+                        setorder(round2, -score, feature)
+                        round2
+                }
+                else {
+                        ## round2 <- round2[ , .(score = sum(score, na.rm = TRUE)), by = feature] put back in if summing from backoff
+                        start <- split[l]
+                        ## if l already == 2, start is not needed
+                        round3 <- data.table(feature = character(), score = numeric())
+                        round3 <- switch((l-1),
+                                process0start(dt, k, khat = 2),
+                                process1start(start, dt, k, khat = 2))
+                        round3 <- round3[!(feature %in% round2$feature)]  ## take this out to improve accuarcy?
+                        round3 <- rbindlist(list(round2, round3)) 
+                        if (l == 2) {
+                                round3 <- round3[feature != "xx"]
+                                s <- sum(round3$score)
+                                round3[ , score := score/s]
+                                setorder(round3, -score, feature)
+                                round3
+                        }
+                        else {
+                                round4 <- data.table(feature = character(), score = numeric())
+                                round4 <- process0start(dt, k, khat = 3)
+                                round4 <- round4[!(feature %in% round3$feature)]  ## take this out to improve accuarcy?
+                                round4 <- rbindlist(list(round3, round4))
+                                round4 <- round4[feature != "xx"]
+                                s <- sum(round4$score)
+                                round4[ , score := score/s]
+                                setorder(round4, -score, feature)
+                                round4
+                        }
+                }
+        }
+}
+
+gramprob4 <- function(fourg) {
+        split <- unlist(strsplit(fourg, "_", fixed = TRUE))
+        first3 <- paste(split[1:3], collapse = "_")
+        t <- top(first3)
+        t[feature == split[4]]$score
+}
+
+perplex <- function(testpoints = frt4$feature, b = 2) {
+        s <- numeric()
+        start <- character()
+        end <- character()
+        len <- length(testpoints)
+        for (i in 1:len) {
+                end[i] <- unlist(strsplit(testpoints[i], "_", fixed = TRUE))[4]
+                s[i] <- gramprob4(testpoints[i])
+        }
+        b^((-1/len)*sum(log(s, base = b)))
+}
+
+accuracy <- function(testpoints = frt4$feature) {
+        start <- character()
+        end <- character()
+        len <- length(testpoints)
+        iscorrect <- rep(0,len)
+        for (i in 1:len) {
+                split <- unlist(strsplit(testpoints[i], "_", fixed = TRUE))
+                start[i] <- paste(split[1:3], collapse = "_")
+                end[i] <- split[4]
+                if (end[i] %in% top(start[i])$feature[1])
+                        iscorrect[i] <- 1
+        }
+        sum(iscorrect)/len
+}
+
+accuracy3 <- function(testpoints = frt4$feature) {
+        start <- character()
+        end <- character()
+        len <- length(testpoints)
+        iscorrect <- rep(0,len)
+        for (i in 1:len) {
+                split <- unlist(strsplit(testpoints[i], "_", fixed = TRUE))
+                start[i] <- paste(split[1:3], collapse = "_")
+                end[i] <- split[4]
+                if (end[i] %in% top(start[i])$feature[1:3])
+                        iscorrect[i] <- 1
+        }
+        sum(iscorrect)/len
+}
+```
+
+## Overview:
+
+The app: https://immanence.shinyapps.io/shinypredict/
+
+The goal of this project was to build a predictive text model.  Given one to three English words in sequence, this model assigns probability-like scores to candidates for the following word in general writing (see example below).  The app reactively displays and graphs (no refresh button for easier use) up to the top twenty candidates and their scores.
+
+Though any large body of human-written text could have been used for training, the model is currently trained on a random sample of textual units (separated by line breaks) from three English text files (randomly taken from Twitter, blogs and news articles, respectively) that collectively contain about 112 million words (about 840Mb loaded in R) of natural language (along with non-word strings, stray punctuation etc.).  The statistical approach employed, described below, entirely ignores grammar or any notion of meaning.  Rather, it tries to approximate "English," conceived of as the set of all understandable writing in English online.  This approach has the virtue of evolving over time with text-based English usage as it can learn the latest vocabulary and frequencies from training text soon after it is generated.
+
+## Prediction Example with Computation Time:
+
+```{r top10, echo = TRUE}
+begin <- "in the middle"
+system.time(t <- top(start = parseinput(begin))[1:10], gcFirst = TRUE)  ## in seconds
+t
+```
+
+## Results:
+
+```{r results}
+summ <- data.frame(Perplexity = round(perplex(endxxout(frt4)$feature), 1), Top1Accuracy = paste(round(100*accuracy(endxxout(frt4)$feature), 1), "%"), Top3Accuracy = paste(round(100*accuracy3(endxxout(frt4)$feature), 1), "%"))
+kable(summ, align = "ccc")
+```
+
+These tests (see discussion of sampling parameters below) used `r length(endxxout(frt4)$feature)` 4-word phrases.  This is after taking out 4-word phrases ending in "xx" (see discussion of "xx" below) since the model will assign zero probability to "xx" as the completion of the initial three-word phrase.  For accuracy, the last word of each 4-word test phrase was compared to the first or top-three prediction given by the model's reaction to the initial three words of the phrase.  For perplexity, the formula simply uses the probabilty score assigned by the model, based on the initial three words of the phrase, to the actual final word in each phrase.
+
+I initially wrote a recursive function to perform the core processing (see discussion of Stupid Backoff below), but despite optimization it was still at least three times slower than the clunkier nested if-else statements that I ended up using.   I opted not use SQL to look up relative frequencies - just data.table functions.  My function does find top candidates for the next word in a fraction of a second (at least on a desktop computer) as shown above.
+
+Skipgrams unfortunately seemed to reduce accuracy/increase perplexity slightly (while using more memory and computation time).  I am not sure whether this has to do with the way I calculate ratios of n-gram counts to (n-1)-gram counts. I tried to correct for the added frequency of certain n-grams from skipping (see code comments), but the reduced accuracy with skipgrams persisted, leading me to set aside skipgrams while leaving the code in place to accept them later if needed.  The skipgram problem may have to do with the way that I handle rare and unknown words: skipgrams create many more n-grams with one or more "xx" in them (see discussion of "xx" below).
+
+## Exploration and Sampling:
+
+The data come with subject codes identifying topics (as metadata), but we ignore these potential predictors because subject codes would not be available for a new sentence that is being composed while the predictive text algorithm is working.
+
+The table below summarizes basic charactaristics of the three source text files, with __line lengths shown as number of characters__ (note the maximum 140 characters per tweet as expected per Twitter's well-known limit).  \"Estimated word count\" divides the total number of characters per file by 5.1 (an average word length in English) and is shown in millions.
+
+```{r summary}
+summary(l)
+```
+
+We combine lines from all three sources into one fixed training "corpus" as this will give the best chance of capturing word combinations from many different contexts.  A more specialized corpus could train a more accurate model (provided that accuracy is measured using a test set that has been set aside within the corpus itself rather than from an outside source), but here we will focus on the training text at hand in exploring how to model natural language.   
+
+To further examine the data under the constraints of memory and computating power, I have set a "samplerate" parameter (currently `r paste(100*samplerate, "%", collapse = "")`) to control the percentage of text-file lines extracted for use in training.  The maximum sample rate I have been able to use is 30% (a few hours of processing to run this document).  There is also a parameter (currently `r testlines`) to choose the number of lines to take from each of the three source text files to use for testing.  The test lines are only used to generate 4-word phrases used to calculate accuracy and perplexity measures of the model.  The test lines are selected first to create a partition, with the remaining sampled lines used for training.  
+
+## Cleaning the Raw Data:
+
+Profanity filter: we remove any lines that contain profanity (words/phrases from a standard list) so that we do not train the model to predict a profane word or word that would form a profane phrase. "Jail" and "bait" are both fine, but the latter should never come up as the most likely word to follow the former.  Entire lines must be removed since removing only the offending word/phrase could leave behind words pairs that appear consecutive but were actually separated from each other.  Removing these lines reduces the number of lines in our sample by up to 20%, but we can always use a slightly higher sampling rate to compensate.  Any sampling bias introduced - a tendency to predict phrase continuations as they would occur in profanity-free text - would be welcome.
+
+Using the quanteda R package, this is followed by removal of numbers, punctuation marks, symbols, separators, Twitter punctuation, hyphens and URLs.  We do not eliminate stopwords (very common words that are often useless for searching) precisely because they are frequently used and should be predicted to save time when appropriate. Stemming (reducing related words to a common root form) also seems inappropriate as predicting the next stem is not helpful. This approach also does not eliminate or expand contractions, since “don’t” and “do not” are different in tone and may be more or less used in combination with different words.
+
+## Exploring the Cleaned Data:
+
+We then employ the n-gram framework (up to 4-grams for now) from the field of natural-language processing (NLP).  Lines of text are divided ("tokenized") into single words (1-grams), consecutive pairs (2-grams), triples (3-grams) and so on.
+
+Below we compare the distribution of n-grams for 1-, 2-, 3- and 4-grams in the training set.  Counts could be used, but frequencies are more comparable since we have differing total counts (e.g. more total 2-gram instances than 1-gram instances).  N-gram frequencies were found to to be linear on a log-log plot against frequency rank (Zipf distribution).
+
+```{r plot}
+graph(onegr)
+```
+
+## Reducing Computer Time/Memory:
+
+The negative slope is steepest for 1-grams, which have the most truly high-frequency words (vs. 2-, 3- or 4-grams).  Thus we can sacrifice the most 1-grams and still cover the vast majority of all training n-gram instances.  The algorithm calculates the count below which the words account for only `r paste(100*(1-keepers), "%")` of all word instances.  At the current sample rate (`r paste(100*samplerate, "%", collapse = "")`), this cutoff was a count of `r frcutoff[1]` instances.  `r lengthfr1` 1-grams were kept as the vocabulary to use out of a total number of distinct words `r lengthfr`.
+
+To increase speed with little lost accuracy, 2-, 3- and 4-grams that occur only once (the majority of them) are eliminated - though this can be changed using parameters.  There were `r length(fr2$feature2)`, `r length(fr3$feature3)` and `r length(fr4$feature4)` 2-, 3- and 4-grams kept (by virtue of having two or more instances), respectively.
+
+The mean counts of kept n-grams are `r round(mean(fr1$frequency1), 1)`, `r round(mean(fr2$frequency2), 1)`, `r round(mean(fr3$frequency3), 1)` and `r round(mean(fr4$frequency4), 1)` for 1-, 2-, 3- and 4-grams, respectively, while the medians were `r median(fr1$frequency1)`, `r median(fr2$frequency2)`, `r median(fr3$frequency3)` and `r median(fr4$frequency4)`.  As can be seen, most n-grams occur only the minimum number of times allowed.
+
+## Handling Rare/Unseen/Out-Of-Vocabulary Words:
+
+I believe that the low-frequency 1-grams would normally be eliminated at this point in modeling, but I changed them all to “xx,” a dummy variable to indicate a generic rare word.  The higher-order n-grams - as well as the test set of 4-grams - also have words that are “rare” (in the training set) changed to “xx.”  In fact these are built from the 1-grams (separately for training and test sets).  “Unseen” words entered by the user are also changed to “xx,” but “xx” is never predicted as its probability weight is zeroed at end of the algorithm.  
+
+## Process and Theory:
+
+All the n-grams are then assembled into a large R data.table object with their count ratios (e.g. "with her husband" is the completion of "with her" about 5% of the time that “with her” occurs or "in the" is the completion of "in" about 15% of the time that "in" occurs).   For the Shiny app, this matrix is uploaded along with an R script, which uses the Shiny package and several functions to manipulate the matrix.
+
+The main "top" function implements Stupid Backoff (Brants, Popat, Xu, Och and Dean, 2007), which uses the maximum likelihood estimator (MLE) for the probability of any given word given the preceding words, namely the ratio of the count of the completed phrase to the count of the initial part.  (Proof involves a Markov assumption and the chain rule of conditional probability.)  If none is found for a particular potential final word, a discounted score (multiplied by 0.4) is assigned to the same word as the completion of a shorter initial phrase, eliminating the first word, then the second, then the third, discounting each time.  All these scores are then arranged in order, the “xx” taken out, and the scores re-normalized to add up to 1 so as to retain a key property of probabilities needed for measurement of the model's perplexity.
