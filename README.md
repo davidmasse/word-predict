@@ -10,9 +10,9 @@ My earlier implementation in R, described below, was more complex as it had to g
 
 ## Overview
 
-[app1](/img/app1.png)
-[app3](/img/app3.png)
-[app2](/img/app2.png)
+![app1](/img/app1.png)
+![app3](/img/app3.png)
+![app2](/img/app2.png)
 
 [Word-Prediction App](https://immanence.shinyapps.io/shinypredict/)
 
