@@ -1,14 +1,10 @@
 # Word Prediction in R and Python
 
-## Python and R
-
 For the Python version of this project, please see the following blog posts, which include all code along with some background information about concepts like Zipf's Law and perplexity:
 
 [Predicting the Next Word](https://medium.com/@davidmasse8/predicting-the-next-word-back-off-language-modeling-8db607444ba9)
 
 [Evaluating the Model](https://medium.com/@davidmasse8/using-perplexity-to-evaluate-a-word-prediction-model-8820cf3fd3aa)
-
-![blog](/img/blog.png)
 
 My earlier implementation in R, described below, was more complex as it had to generate a self-contained dataframe that could be queried for a real-time web app with short wait times.
 
