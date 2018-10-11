@@ -10,6 +10,10 @@ My earlier implementation in R, described below, was more complex as it had to g
 
 ## Overview
 
+[app1](/img/app1.png)
+[app3](/img/app3.png)
+[app2](/img/app2.png)
+
 [Word-Prediction App](https://immanence.shinyapps.io/shinypredict/)
 
 The goal of this project was to build a predictive text model. Given one to three English words in sequence, this model assigns probability-like scores to candidates for the following word in general writing (see example below). The app reactively displays and graphs (no refresh button for easier use) up to the top twenty candidates and their scores.
